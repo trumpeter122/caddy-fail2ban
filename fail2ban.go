@@ -18,10 +18,10 @@ func init() {
 // Fail2Ban implements an HTTP handler that checks a specified file for banned
 // IPs and matches if they are found
 type Fail2Ban struct {
-	Banfile string `json:"banfile"`
-
-	logger  *zap.Logger
-	banlist Banlist
+	Banfile  string `json:"banfile"`
+	Header   string `json:"header,omitempty"`
+	logger   *zap.Logger
+	banlist  Banlist
 }
 
 // CaddyModule returns the Caddy module information.
@@ -41,26 +41,36 @@ func (m *Fail2Ban) Provision(ctx caddy.Context) error {
 }
 
 func (m *Fail2Ban) Match(req *http.Request) bool {
-	remote_ip, _, err := net.SplitHostPort(req.RemoteAddr)
-	if err != nil {
-		m.logger.Error("Error parsing remote addr into IP & port", zap.String("remote_addr", req.RemoteAddr), zap.Error(err))
-		// Deny by default
-		return true
+	remoteIP := ""
+
+	if m.Header != "" {
+		remoteIP = req.Header.Get(m.Header)
 	}
 
-	// Only ban if header X-Caddy-Ban is sent
+	if remoteIP == "" {
+		var err error
+		remoteIP, _, err = net.SplitHostPort(req.RemoteAddr)
+		if err != nil {
+			m.logger.Error("Error parsing remote addr into IP & port",
+				zap.String("remote_addr", req.RemoteAddr),
+				zap.Error(err),
+			)
+			return true
+		}
+	}
+
 	_, ok := req.Header["X-Caddy-Ban"]
 	if ok {
-		m.logger.Info("banned IP", zap.String("remote_addr", remote_ip))
+		m.logger.Info("banned IP", zap.String("remote_ip", remoteIP))
 		return true
 	}
 
-	if m.banlist.IsBanned(remote_ip) == true {
-		m.logger.Info("banned IP", zap.String("remote_addr", remote_ip))
+	if m.banlist.IsBanned(remoteIP) {
+		m.logger.Info("banned IP", zap.String("remote_ip", remoteIP))
 		return true
 	}
 
-	m.logger.Debug("received request", zap.String("remote_addr", remote_ip))
+	m.logger.Debug("received request", zap.String("remote_ip", remoteIP))
 	return false
 }
 
@@ -69,13 +79,20 @@ func (m *Fail2Ban) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		switch v := d.Val(); v {
 		case "fail2ban":
-			if !d.Next() {
+			if !d.NextArg() {
 				return fmt.Errorf("fail2ban expects file path, value is missing")
 			}
 			m.Banfile = d.Val()
+
+			if d.NextArg() {
+				m.Header = d.Val()
+			}
+
+			if d.NextArg() {
+				return fmt.Errorf("fail2ban expects at most 2 arguments: banfile and optional header")
+			}
 		default:
 			return fmt.Errorf("unknown config value: %s", v)
-
 		}
 	}
 	return nil
